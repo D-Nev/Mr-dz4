@@ -1,31 +1,42 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net;
-using System.Net.Sockets;
+﻿using System.Collections.Concurrent;
+using System.Net.WebSockets;
 using System.Text;
-using System.Threading.Tasks;
 
-class Server
+var builder = WebApplication.CreateBuilder(args);
+var app = builder.Build();
+
+var port = Environment.GetEnvironmentVariable("PORT") ?? "10000";
+app.Urls.Add($"http://0.0.0.0:{port}");
+
+app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
+
+var clients = new ConcurrentDictionary<WebSocket, byte>();
+
+app.MapGet("/", () => "UDP-chat relay over WebSocket. Connect to /ws via WebSocket.");
+
+app.Map("/ws", async ctx =>
 {
-    const int Port = 9000;
-
-    static async Task Main()
+    if (!ctx.WebSockets.IsWebSocketRequest)
     {
-        Console.OutputEncoding = Encoding.UTF8;
-        Console.Title = "СЕРВЕР";
-        using var server = new UdpClient(Port);
-        var clients = new List<IPEndPoint>();
-        Console.WriteLine($"Сервер слухає UDP {Port}");
+        ctx.Response.StatusCode = 400;
+        await ctx.Response.WriteAsync("Expected WebSocket");
+        return;
+    }
 
+    using var ws = await ctx.WebSockets.AcceptWebSocketAsync();
+    clients.TryAdd(ws, 1);
+
+    var buf = new byte[8192];
+
+    try
+    {
         while (true)
         {
-            var res = await server.ReceiveAsync();
-            var remote = res.RemoteEndPoint;
+            var res = await ws.ReceiveAsync(buf, CancellationToken.None);
+            if (res.MessageType == WebSocketMessageType.Close) break;
+            if (res.MessageType != WebSocketMessageType.Text) continue;
 
-            if (!clients.Exists(ep => ep.Equals(remote)))
-                clients.Add(remote);
-
-            string payload = Encoding.UTF8.GetString(res.Buffer);
+            string payload = Encoding.UTF8.GetString(buf, 0, res.Count);
             var parts = payload.Split('|', 3);
             if (parts.Length < 3) continue;
 
@@ -37,10 +48,32 @@ class Server
             string outPacket = $"CHAT|{time}|{nick}|{colorId}|{text}";
             byte[] data = Encoding.UTF8.GetBytes(outPacket);
 
-            foreach (var c in clients)
-                await server.SendAsync(data, data.Length, c);
+            foreach (var socket in clients.Keys.ToArray())
+            {
+                if (socket.State != WebSocketState.Open)
+                {
+                    clients.TryRemove(socket, out _);
+                    continue;
+                }
+
+                try
+                {
+                    await socket.SendAsync(data, WebSocketMessageType.Text, true, CancellationToken.None);
+                }
+                catch
+                {
+                    clients.TryRemove(socket, out _);
+                }
+            }
 
             Console.WriteLine($"[{time}] {nick}: {text}");
         }
     }
-}
+    finally
+    {
+        clients.TryRemove(ws, out _);
+        try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None); } catch { }
+    }
+});
+
+app.Run();

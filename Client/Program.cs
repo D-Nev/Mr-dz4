@@ -1,59 +1,61 @@
-﻿using System;
-using System.Net;
-using System.Net.Sockets;
+﻿using System.Net.WebSockets;
 using System.Text;
-using System.Threading.Tasks;
 
 class Client
 {
-    const int ServerPort = 9000;
     static readonly ConsoleColor[] Palette = new[]
     {
-        ConsoleColor.White,
-        ConsoleColor.Yellow,
-        ConsoleColor.Cyan,
-        ConsoleColor.Green,
-        ConsoleColor.Magenta,
-        ConsoleColor.Blue,
-        ConsoleColor.Red,
-        ConsoleColor.Gray
+        ConsoleColor.White, ConsoleColor.Yellow, ConsoleColor.Cyan, ConsoleColor.Green,
+        ConsoleColor.Magenta, ConsoleColor.Blue, ConsoleColor.Red, ConsoleColor.Gray
     };
 
     static async Task Main()
     {
         Console.OutputEncoding = Encoding.UTF8;
-        Console.Title = "КЛІЄНТ";
+        Console.Title = "КЛІЄНТ (WebSocket)";
 
         Console.Write("Введіть нік: ");
-        string nick = Console.ReadLine()?.Trim();
+        string nick = Console.ReadLine()?.Trim() ?? "user";
         if (string.IsNullOrWhiteSpace(nick)) nick = "user";
 
         int colorId = AskColorId();
 
-        var serverEp = new IPEndPoint(IPAddress.Loopback, ServerPort);
-        using var client = new UdpClient();
-        client.Connect(serverEp);
+        Console.Write("WS URL сервера (Enter = wss://<твій-сервіс>.onrender.com/ws): ");
+        string? url = Console.ReadLine();
+        if (string.IsNullOrWhiteSpace(url))
+            url = "wss://REPLACE.onrender.com/ws";
 
+        using var ws = new ClientWebSocket();
+        await ws.ConnectAsync(new Uri(url), CancellationToken.None);
+
+        // приём
         _ = Task.Run(async () =>
         {
-            while (true)
+            var buffer = new byte[8192];
+            while (ws.State == WebSocketState.Open)
             {
-                UdpReceiveResult res;
-                try { res = await client.ReceiveAsync(); }
-                catch { break; }
+                var sb = new StringBuilder();
+                WebSocketReceiveResult res;
+                do
+                {
+                    res = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
+                    if (res.MessageType == WebSocketMessageType.Close) return;
+                    sb.Append(Encoding.UTF8.GetString(buffer, 0, res.Count));
+                } while (!res.EndOfMessage);
 
-                var parts = Encoding.UTF8.GetString(res.Buffer).Split('|', 5);
-                if (parts.Length < 5 || parts[0] != "CHAT") continue;
+                var parts = sb.ToString().Split('|', 5);
+                if (parts.Length == 5 && parts[0] == "CHAT")
+                {
+                    string time = parts[1];
+                    string from = parts[2];
+                    int fromColor = ParseColorId(parts[3]);
+                    string text = parts[4];
 
-                string time = parts[1];
-                string fromNick = parts[2];
-                int fromColorId = ParseColorId(parts[3]);
-                string text = parts[4];
-
-                var old = Console.ForegroundColor;
-                Console.ForegroundColor = ColorFromId(fromColorId);
-                Console.WriteLine($"[{time}] {fromNick}: {text}");
-                Console.ForegroundColor = old;
+                    var old = Console.ForegroundColor;
+                    Console.ForegroundColor = ColorFromId(fromColor);
+                    Console.WriteLine($"[{time}] {from}: {text}");
+                    Console.ForegroundColor = old;
+                }
             }
         });
 
@@ -65,43 +67,33 @@ class Client
             if (line == null) continue;
             if (line.Equals("/exit", StringComparison.OrdinalIgnoreCase)) break;
 
-            line = line.Replace("|", "/");
-
+            line = line.Replace("|", "/"); // чтобы не ломать протокол
             string payload = $"{nick}|{colorId}|{line}";
-            byte[] data = Encoding.UTF8.GetBytes(payload);
-            await client.SendAsync(data, data.Length);
+            byte[] bytes = Encoding.UTF8.GetBytes(payload);
+            await ws.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
         }
+
+        if (ws.State == WebSocketState.Open)
+            await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
     }
 
     static int AskColorId()
     {
         Console.WriteLine("Оберіть колір (введіть номер):");
-        Console.WriteLine(" 1) White");
-        Console.WriteLine(" 2) Yellow");
-        Console.WriteLine(" 3) Cyan");
-        Console.WriteLine(" 4) Green");
-        Console.WriteLine(" 5) Magenta");
-        Console.WriteLine(" 6) Blue");
-        Console.WriteLine(" 7) Red");
-        Console.WriteLine(" 8) Gray");
+        Console.WriteLine(" 1) White\n 2) Yellow\n 3) Cyan\n 4) Green\n 5) Magenta\n 6) Blue\n 7) Red\n 8) Gray");
         Console.Write("Ваш вибір [1..8] (Enter = 1): ");
-
         var s = Console.ReadLine();
-        if (int.TryParse(s, out int n) && n >= 1 && n <= 8) return n;
-        return 1;
+        return (int.TryParse(s, out int n) && n >= 1 && n <= 8) ? n : 1;
     }
 
     static int ParseColorId(string token)
     {
         if (int.TryParse(token, out int n) && n >= 1 && n <= 8) return n;
-
         if (Enum.TryParse<ConsoleColor>(token, true, out var cc))
-        {
-            for (int i = 0; i < Palette.Length; i++)
-                if (Palette[i] == cc) return i + 1;
-        }
+            for (int i = 0; i < Palette.Length; i++) if (Palette[i] == cc) return i + 1;
         return 1;
     }
+
     static ConsoleColor ColorFromId(int id)
     {
         int idx = Math.Clamp(id, 1, 8) - 1;
