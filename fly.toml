@@ -1,0 +1,12 @@
+app = "udp-chat-yourname"       
+primary_region = "waw"          
+
+[build]
+  dockerfile = "server/Dockerfile"
+
+[[services]]
+  protocol = "udp"
+  internal_port = 9000
+
+  [[services.ports]]
+    port = 9000
