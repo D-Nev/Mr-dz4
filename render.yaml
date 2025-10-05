@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: tcp-increment-server
+    runtime: dotnet
+    plan: free
+    buildCommand: dotnet build
+    startCommand: dotnet run
+    envVars:
+      - key: PORT
+        value: 5000

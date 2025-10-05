@@ -7,30 +7,19 @@ using System.Threading.Tasks;
 
 class Server
 {
-    static int GetPort() => int.TryParse(Environment.GetEnvironmentVariable("PORT"), out var p) ? p : 9000;
+    const int Port = 9000;
 
     static async Task Main()
     {
         Console.OutputEncoding = Encoding.UTF8;
-        Console.Title = "СЕРВЕР (UDP)";
-        int port = GetPort();
-
-        using var server = new UdpClient(port);
-        server.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-
+        Console.Title = "СЕРВЕР";
+        using var server = new UdpClient(Port);
         var clients = new List<IPEndPoint>();
-        Console.WriteLine($"Сервер слухає UDP {port} (0.0.0.0:{port})");
+        Console.WriteLine($"Сервер слухає UDP {Port}");
 
         while (true)
         {
-            UdpReceiveResult res;
-            try { res = await server.ReceiveAsync(); }
-            catch (Exception ex)
-            {
-                Console.WriteLine("Receive error: " + ex.Message);
-                continue;
-            }
-
+            var res = await server.ReceiveAsync();
             var remote = res.RemoteEndPoint;
 
             if (!clients.Exists(ep => ep.Equals(remote)))
@@ -48,17 +37,8 @@ class Server
             string outPacket = $"CHAT|{time}|{nick}|{colorId}|{text}";
             byte[] data = Encoding.UTF8.GetBytes(outPacket);
 
-            foreach (var c in clients.ToArray())
-            {
-                try
-                {
-                    await server.SendAsync(data, data.Length, c);
-                }
-                catch
-                {
-                   
-                }
-            }
+            foreach (var c in clients)
+                await server.SendAsync(data, data.Length, c);
 
             Console.WriteLine($"[{time}] {nick}: {text}");
         }
